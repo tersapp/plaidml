@@ -73,6 +73,12 @@ public:
     }
   }
 
+  void timestampQuery() {
+    if (failed(vulkanRuntime.timestampQuery())) {
+      llvm::errs() << "vulkanRuntime.timestampQuery() failed";
+    }
+  }
+
 private:
   VulkanRuntime vulkanRuntime;
 };

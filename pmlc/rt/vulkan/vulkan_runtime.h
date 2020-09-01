@@ -174,6 +174,7 @@ public:
   mlir::LogicalResult createMemoryTransferAction(VkBuffer src, VkBuffer dst,
                                                  size_t size);
   mlir::LogicalResult submitCommandBuffers();
+  mlir::LogicalResult timestampQuery();
   /// Sets needed data for Vulkan runtime.
   void setResourceData(const ResourceData &resData);
   void setResourceData(const DescriptorSetIndex desIndex,

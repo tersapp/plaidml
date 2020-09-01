@@ -316,6 +316,15 @@ LogicalResult VulkanRuntime::submitCommandBuffers() {
   return success();
 }
 
+/*
+void vkCmdWriteTimestamp(
+    VkCommandBuffer                             commandBuffer,
+    VkPipelineStageFlagBits                     pipelineStage,
+    VkQueryPool                                 queryPool,
+    uint32_t                                    query);
+*/
+LogicalResult VulkanRuntime::timestampQuery() { return success(); }
+
 LogicalResult VulkanRuntime::createInstance() {
   if (volkInitialized != VK_SUCCESS) {
     volkInitialized = volkInitialize();

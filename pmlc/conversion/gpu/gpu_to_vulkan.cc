@@ -53,6 +53,7 @@ static constexpr const char *kCreateVulkanMemoryTransferAction =
     "createVulkanMemoryTransferAction";
 static constexpr const char *kAddVulkanLaunchActionToSchedule =
     "addVulkanLaunchActionToSchedule";
+static constexpr const char *kTimeStampQuery = "timestampQuery";
 
 static constexpr const char *kBindBufferBFloat16 = "bindBufferBFloat16";
 static constexpr const char *kBindBufferFloat16 = "bindBufferFloat16";
@@ -366,6 +367,11 @@ void ConvertGpuLaunchFuncToVulkanCalls::declareVulkanFunctions(Location loc) {
       LLVM::LLVMType::getFunctionTy(getLLVMVoidType(), {getLLVMPointerType()},
                                     /*isVarArg=*/false));
 
+  builder.create<LLVM::LLVMFuncOp>(
+      loc, kTimeStampQuery,
+      LLVM::LLVMType::getFunctionTy(getLLVMVoidType(), {getLLVMPointerType()},
+                                    /*isVarArg=*/false));
+
   if (optionalSymbols.count(kPrint_memref_f32)) {
     builder.create<FuncOp>(
         loc, kPrint_memref_f32,
@@ -413,6 +419,10 @@ void ConvertGpuLaunchFuncToVulkanCalls::convertGpuLaunchFunc(
         loc, ArrayRef<Type>{getLLVMPointerType()},
         builder.getSymbolRefAttr(kInitVulkan), ArrayRef<Value>{});
     vulkanRuntime = initVulkanCall.getResult(0);
+
+    builder.create<LLVM::CallOp>(loc, ArrayRef<Type>{},
+                                 builder.getSymbolRefAttr(kTimeStampQuery),
+                                 ArrayRef<Value>{vulkanRuntime});
   }
 
   // Serialize `spirv::Module` into binary form.
@@ -471,6 +481,10 @@ void ConvertGpuLaunchFuncToVulkanCalls::convertGpuLaunchFunc(
     builder.create<LLVM::CallOp>(
         loc, ArrayRef<Type>{}, builder.getSymbolRefAttr(kSubmitCommandBuffers),
         ArrayRef<Value>{vulkanRuntime});
+
+    builder.create<LLVM::CallOp>(loc, ArrayRef<Type>{},
+                                 builder.getSymbolRefAttr(kTimeStampQuery),
+                                 ArrayRef<Value>{vulkanRuntime});
 
     builder.create<LLVM::CallOp>(loc, ArrayRef<Type>{},
                                  builder.getSymbolRefAttr(kDeinitVulkan),
