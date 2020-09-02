@@ -135,6 +135,10 @@ void submitCommandBuffers(void *vkRuntimeManager) {
       ->submitCommandBuffers();
 }
 
+void timestampQuery(void *vkRuntimeManager) {
+  reinterpret_cast<VulkanRuntimeManager *>(vkRuntimeManager)->timestampQuery();
+}
+
 #define BIND_BUFFER_IMPL(_name_, _type_)                                       \
   void _mlir_ciface_bindBuffer##_name_(                                        \
       void *vkRuntimeManager, DescriptorSetIndex setIndex,                     \
@@ -179,6 +183,7 @@ struct Registration {
                    reinterpret_cast<void *>(addVulkanLaunchActionToSchedule));
     registerSymbol("submitCommandBuffers",
                    reinterpret_cast<void *>(submitCommandBuffers));
+    registerSymbol("timestampQuery", reinterpret_cast<void *>(timestampQuery));
     registerSymbol("_mlir_ciface_bindBufferFloat16",
                    reinterpret_cast<void *>(_mlir_ciface_bindBufferFloat16));
     registerSymbol("_mlir_ciface_bindBufferFloat32",
