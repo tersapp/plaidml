@@ -7,6 +7,7 @@
 #include "pmlc/dialect/pxa/analysis/strides.h"
 #include "pmlc/dialect/pxa/ir/ops.h"
 #include "pmlc/dialect/pxa/transforms/pass_detail.h"
+#include "pmlc/dialect/pxa/transforms/tile.h"
 #include "pmlc/util/logging.h"
 #include "pmlc/util/tags.h"
 #include "pmlc/util/util.h"
@@ -17,8 +18,8 @@ namespace pmlc::dialect::pxa {
 
 namespace {
 
-using WriteRead = std::pair<PxaReduceOp, PxaLoadOp>;
-using WriteWrite = std::pair<PxaReduceOp, PxaReduceOp>;
+using WriteRead = std::pair<Operation *, Operation *>;
+using WriteWrite = std::pair<Operation *, Operation *>;
 
 struct FusionInfo {
   struct AffineParallelInfo {
@@ -44,18 +45,22 @@ struct FusionInfo {
   // Over-fusion prevention parameter
   int64_t memoryActivityThreshold;
 
+  bool reverseFusion;
+
   FusionInfo(AffineParallelOp aBand, AffineParallelOp bBand,
              int64_t memoryActivityThreshold)
       : aInfo{aBand}, bInfo{bBand}, hasPlan(false),
-        memoryActivityThreshold(memoryActivityThreshold) {}
+        memoryActivityThreshold(memoryActivityThreshold), reverseFusion(false) {
+  }
 
   // Helper method to find the original source write of a state update.
-  static PxaReduceOp findSourceWrite(Value val) {
+  static Operation *findSourceWrite(Value val) {
     auto opRes = val.dyn_cast<OpResult>();
-    if (auto op = dyn_cast_or_null<PxaReduceOp>(opRes.getOwner())) {
-      return op;
+    auto owner = opRes.getOwner();
+    if (isa<AffineWriteOpInterface>(owner)) {
+      return owner;
     }
-    if (auto op = dyn_cast<AffineParallelOp>(opRes.getOwner())) {
+    if (auto op = dyn_cast<AffineParallelOp>(owner)) {
       auto retOp = cast<AffineYieldOp>(op.getBody()->getTerminator());
       return findSourceWrite(retOp.getOperand(opRes.getResultNumber()));
     }
@@ -109,6 +114,19 @@ struct FusionInfo {
     if (!getStrides(stridesB, opB, bInfo.op))
       return false;
 
+    SmallVector<int64_t, 6> tileSizes;
+    auto needsTiling = false;
+
+    auto subgroupSizeA = 1;
+    auto subgroupSizeB = 1;
+    if (hasIntegerTag(aInfo.op, "subgroupSize"))
+      subgroupSizeA = pmlc::getIntegerTag(aInfo.op, "subgroupSize", 1);
+    if (hasIntegerTag(bInfo.op, "subgroupSize"))
+      subgroupSizeB = pmlc::getIntegerTag(bInfo.op, "subgroupSize", 1);
+
+    if (subgroupSizeA = 1 && subgroupSizeB != 1)
+      reverseFusion = true;
+
     assert(stridesA.size() == stridesB.size() &&
            "Fusion ops should read/write the same memref and thus have the "
            "same rank");
@@ -148,12 +166,14 @@ struct FusionInfo {
         return false;
       }
 
-      // Fail if we need to tile for now.  TODO: Implement tiling
+      // If sizes do not match, apply tiling later, scale to the
+      // loop with subgroupSize != attribute if present
       if (mulA != mulB) {
-        opB.emitRemark(
-            "Failed to fuse with def due to mismatched strides, i = ")
-            << i << ": " << mulA << " vs " << mulB;
-        return false;
+        auto tileSize = reverseFusion ? sizeA / sizeB : sizeB / sizeA;
+        tileSizes.push_back(tileSize);
+        needsTiling = true;
+      } else {
+        tileSizes.push_back(1);
       }
 
       // Also fail if the AP's don't have the same lower bound
@@ -188,6 +208,14 @@ struct FusionInfo {
     if (aToB.size() == 0) {
       bInfo.op.emitRemark("No index matches");
       return false;
+    }
+
+    // Add tiling if needed
+    if (needsTiling) {
+      if (reverseFusion)
+        performTiling(aInfo.op, tileSizes);
+      else
+        performTiling(bInfo.op, tileSizes);
     }
 
     // Over-fusion prevention:
@@ -298,10 +326,10 @@ struct FusionInfo {
           continue;
         // Now we make sure it's a read or a write, if not, we can't do fusion,
         // bail.
-        if (auto read = dyn_cast<PxaLoadOp>(user)) {
-          readAfterWrites.emplace_back(write, read);
-        } else if (auto write2 = dyn_cast<PxaReduceOp>(user)) {
-          writeAfterWrites.emplace_back(write, write2);
+        if (isa<AffineReadOpInterface>(user)) {
+          readAfterWrites.emplace_back(write, user);
+        } else if (isa<AffineWriteOpInterface>(user)) {
+          writeAfterWrites.emplace_back(write, user);
         } else {
           user->emitRemark("Op is not a load or reduce");
           return false;
@@ -310,10 +338,14 @@ struct FusionInfo {
     }
     // For each raw & waw, consider the plan
     for (auto &raw : readAfterWrites) {
-      considerPlan(raw.first, raw.second);
+      auto write = cast<AffineWriteOpInterface>(raw.first);
+      auto read = cast<AffineReadOpInterface>(raw.second);
+      considerPlan(write, read);
     }
     for (auto &waw : writeAfterWrites) {
-      considerPlan(waw.first, waw.second);
+      auto write = cast<AffineWriteOpInterface>(waw.first);
+      auto write2 = cast<AffineWriteOpInterface>(waw.second);
+      considerPlan(write, write2);
     }
     return hasPlan;
   }
@@ -382,10 +414,18 @@ struct FusionInfo {
         /*steps=*/stepsC);
 
     // Copy across any tags, prefer A's.
-    if (hasTags(aInfo.op)) {
-      copyTags(apC, aInfo.op);
-    } else if (hasTags(bInfo.op)) {
-      copyTags(apC, bInfo.op);
+    if (!reverseFusion) {
+      if (hasTags(aInfo.op)) {
+        copyTags(apC, aInfo.op);
+      } else if (hasTags(bInfo.op)) {
+        copyTags(apC, bInfo.op);
+      }
+    } else {
+      if (hasTags(bInfo.op)) {
+        copyTags(apC, bInfo.op);
+      } else if (hasTags(aInfo.op)) {
+        copyTags(apC, aInfo.op);
+      }
     }
     clearTags(aInfo.op);
     clearTags(bInfo.op);
@@ -534,6 +574,7 @@ struct FusionPass : public FusionBase<FusionPass> {
           if (merge_immediate) {
             itOp = Block::iterator(newOp.getOperation());
           }
+          // TODO: add affine normalizations
         }
       }
     }
