@@ -27,6 +27,7 @@ namespace pmlc::conversion::gpu {
 namespace gpu = mlir::gpu;
 namespace spirv = mlir::spirv;
 namespace LLVM = mlir::LLVM;
+using mlir::AllocOp;
 using mlir::ArrayRef;
 using mlir::CallOp;
 using mlir::failure;
@@ -282,7 +283,7 @@ ConvertGpuLaunchFuncToVulkanCalls::bindBuffers(Location loc, OpBuilder &builder,
         if (auto loadOp = llvm::dyn_cast<LoadOp>(user.getOwner())) {
           memCpyLevel |= kBufferCopyModeDeviceToHost;
         }
-        if (auto storeOp = llvm::dyn_cast<StoreOp>(user.getOwner())) {
+        if (llvm::dyn_cast<AllocOp>(user.getOwner()) == nullptr) {
           memCpyLevel |= kBufferCopyModeHostToDevice;
         }
       };
